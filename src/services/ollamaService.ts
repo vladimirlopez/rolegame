@@ -43,6 +43,9 @@ export const OllamaService = {
     system?: string,
     stream: boolean = false
   ): Promise<OllamaResponse> {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 180000); // 180s timeout for model loading
+
     try {
       const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
         method: 'POST',
@@ -56,21 +59,27 @@ export const OllamaService = {
           system,
           stream,
         }),
+        signal: controller.signal
       });
+      clearTimeout(id);
 
       if (!response.ok) {
-        throw new Error('Failed to generate response');
+        const errText = await response.text();
+        throw new Error(`Ollama API Error (${response.status}): ${errText}`);
       }
 
       // For non-streaming response
       if (!stream) {
         return await response.json();
       }
-      
-      // TODO: Handle streaming if needed, currently returning final JSON for simplicity in non-stream
+
       return await response.json();
-    } catch (error) {
+    } catch (error: unknown) {
+      clearTimeout(id);
       console.error('Error generating response:', error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Connection timed out. The model might be taking too long to load.');
+      }
       throw error;
     }
   },
@@ -83,37 +92,37 @@ export const OllamaService = {
     system?: string
   ): AsyncGenerator<OllamaResponse, void, unknown> {
     try {
-        const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model, prompt, context, system, stream: true }),
-        });
+      const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt, context, system, stream: true }),
+      });
 
-        if (!response.body) throw new Error('No response body');
+      if (!response.body) throw new Error('No response body');
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value, { stream: true });
-            // Ollama can send multiple JSON objects in one chunk
-            const lines = chunk.split('\n').filter(Boolean);
-            
-            for (const line of lines) {
-                try {
-                    const json = JSON.parse(line);
-                    yield json;
-                } catch (e) {
-                    console.error('Error parsing stream chunk', e);
-                }
-            }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        // Ollama can send multiple JSON objects in one chunk
+        const lines = chunk.split('\n').filter(Boolean);
+
+        for (const line of lines) {
+          try {
+            const json = JSON.parse(line);
+            yield json;
+          } catch (e) {
+            console.error('Error parsing stream chunk', e);
+          }
         }
+      }
     } catch (error) {
-        console.error('Error in stream generation:', error);
-        throw error;
+      console.error('Error in stream generation:', error);
+      throw error;
     }
   }
 };

@@ -70,7 +70,7 @@ export const GameInterface: React.FC = () => {
                     console.error("Failed to start story:", error);
                     addMessage({
                         role: 'system',
-                        content: "Error starting story. Please check Ollama connection.",
+                        content: error instanceof Error ? `Error starting story: ${error.message}` : "Error starting story. Please check Ollama connection.",
                         timestamp: Date.now()
                     });
                 } finally {
@@ -125,7 +125,7 @@ export const GameInterface: React.FC = () => {
             console.error("Error generating response:", error);
             addMessage({
                 role: 'system',
-                content: "Error communicating with the AI.",
+                content: error instanceof Error ? `Error: ${error.message}` : "An unknown error occurred.",
                 timestamp: Date.now()
             });
         } finally {
