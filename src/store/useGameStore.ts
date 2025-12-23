@@ -51,6 +51,7 @@ export interface GameState {
     addMessage: (message: ChatMessage) => void;
     setContextVector: (context: number[]) => void;
     clearGame: () => void;
+    updateLastMessage: (content: string) => void;
 
     addItem: (item: InventoryItem) => void;
     removeItem: (id: string, amount?: number) => void;
@@ -112,6 +113,17 @@ export const useGameStore = create<GameState>()(
                 inventory: [],
                 locations: [],
                 journal: []
+            }),
+
+            updateLastMessage: (content: string) => set((state: GameState) => {
+                const history = [...state.chatHistory];
+                if (history.length > 0) {
+                    history[history.length - 1] = {
+                        ...history[history.length - 1],
+                        content: content
+                    };
+                }
+                return { chatHistory: history };
             }),
 
             addItem: (newItem: InventoryItem) => set((state: GameState) => {

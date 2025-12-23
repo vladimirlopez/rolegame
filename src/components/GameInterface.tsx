@@ -20,7 +20,8 @@ export const GameInterface: React.FC = () => {
         locations,
         addLocation, // destructured action
         journal,
-        addJournalEntry
+        addJournalEntry,
+        updateLastMessage
     } = useGameStore();
 
     const [input, setInput] = useState('');
@@ -42,35 +43,54 @@ export const GameInterface: React.FC = () => {
             if (chatHistory.length === 0 && selectedModel && !loading) {
                 setLoading(true);
                 try {
-                    // Initial prompt to kick off the story
-                    const response = await OllamaService.generateResponse(
+                    // Placeholder for streaming
+                    const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
+                    addMessage(streamMsg); // Add empty message to start filling
+
+                    const stream = await OllamaService.generateResponseStream(
                         selectedModel,
                         "Begin the story. Describe the starting location and situation.",
                         undefined,
                         systemPrompt + SYSTEM_INSTRUCTION_SUFFIX
                     );
 
-                    const { cleanText, commands } = parseGameResponse(response.response);
+                    let fullText = '';
+                    let finalContext: number[] | undefined;
+
+                    for await (const part of stream) {
+                        if (part.done) {
+                            finalContext = part.context;
+                            continue;
+                        }
+
+                        fullText += part.response;
+                        updateLastMessage(fullText);
+
+                        // Scroll to bottom during stream
+                        chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+                    }
+
+                    // Final parsing
+                    const { cleanText, commands } = parseGameResponse(fullText);
+
+                    // Clean up the message (remove commands from visible text)
+                    updateLastMessage(cleanText);
 
                     commands.forEach(cmd => {
                         if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
                         if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
                     });
 
-                    addMessage({
-                        role: 'assistant',
-                        content: cleanText,
-                        timestamp: Date.now()
-                    });
-
-                    if (response.context) {
-                        setContextVector(response.context);
+                    if (finalContext) {
+                        setContextVector(finalContext);
                     }
                 } catch (error) {
                     console.error("Failed to start story:", error);
+                    // Clear game state so user can retry
+                    clearGame();
                     addMessage({
                         role: 'system',
-                        content: error instanceof Error ? `Error starting story: ${error.message}` : "Error starting story. Please check Ollama connection.",
+                        content: error instanceof Error ? `Error starting story: ${error.message}. Click "Reset Game" and try again.` : "Error starting story. Please check Ollama connection.",
                         timestamp: Date.now()
                     });
                 } finally {
@@ -96,29 +116,44 @@ export const GameInterface: React.FC = () => {
         setLoading(true);
 
         try {
-            const response = await OllamaService.generateResponse(
+            // Placeholder for streaming
+            const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
+            addMessage(streamMsg);
+
+            const stream = await OllamaService.generateResponseStream(
                 selectedModel,
                 input,
                 contextVector,
                 systemPrompt + SYSTEM_INSTRUCTION_SUFFIX
             );
 
-            const { cleanText, commands } = parseGameResponse(response.response);
+            let fullText = '';
+            let finalContext: number[] | undefined;
+
+            for await (const part of stream) {
+                if (part.done) {
+                    finalContext = part.context;
+                    continue;
+                }
+                fullText += part.response;
+                updateLastMessage(fullText);
+
+                // Scroll to bottom during stream
+                chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }
+
+            const { cleanText, commands } = parseGameResponse(fullText);
+
+            // Clean up the message (remove commands from visible text)
+            updateLastMessage(cleanText);
 
             commands.forEach(cmd => {
                 if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
                 if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
             });
 
-            const aiMsg: ChatMessage = {
-                role: 'assistant',
-                content: cleanText,
-                timestamp: Date.now()
-            };
-            addMessage(aiMsg);
-
-            if (response.context) {
-                setContextVector(response.context);
+            if (finalContext) {
+                setContextVector(finalContext);
             }
 
         } catch (error) {

@@ -19,7 +19,7 @@ export interface OllamaResponse {
   eval_duration?: number;
 }
 
-const OLLAMA_BASE_URL = 'http://localhost:11434';
+const OLLAMA_BASE_URL = '/api/ollama';
 
 export const OllamaService = {
   async listModels(): Promise<OllamaModel[]> {
@@ -98,26 +98,75 @@ export const OllamaService = {
         body: JSON.stringify({ model, prompt, context, system, stream: true }),
       });
 
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Ollama API Error (${response.status}): ${errText}`);
+      }
+
       if (!response.body) throw new Error('No response body');
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = '';
+
+      let brackets = 0;
+      let inString = false;
+      let escaped = false;
+      let startIdx = -1;
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+
+        if (done) {
+          if (buffer.trim()) {
+            try { yield JSON.parse(buffer); } catch (e) { /* ignore */ }
+          }
+          break;
+        }
 
         const chunk = decoder.decode(value, { stream: true });
-        // Ollama can send multiple JSON objects in one chunk
-        const lines = chunk.split('\n').filter(Boolean);
+        buffer += chunk;
 
-        for (const line of lines) {
-          try {
-            const json = JSON.parse(line);
-            yield json;
-          } catch (e) {
-            console.error('Error parsing stream chunk', e);
+        let i = 0;
+        while (i < buffer.length) {
+          const char = buffer[i];
+
+          if (escaped) {
+            escaped = false;
+            i++;
+            continue;
           }
+          if (char === '\\') {
+            escaped = true;
+            i++;
+            continue;
+          }
+          if (char === '"') {
+            inString = !inString;
+            i++;
+            continue;
+          }
+
+          if (!inString) {
+            if (char === '{') {
+              if (brackets === 0) startIdx = i;
+              brackets++;
+            } else if (char === '}') {
+              brackets--;
+              if (brackets === 0 && startIdx !== -1) {
+                const jsonStr = buffer.substring(startIdx, i + 1);
+                try {
+                  yield JSON.parse(jsonStr);
+                } catch (e) {
+                  console.error("Stream parse error:", e);
+                }
+                buffer = buffer.substring(i + 1);
+                i = -1;
+                startIdx = -1;
+              }
+            }
+          }
+          i++;
         }
       }
     } catch (error) {
