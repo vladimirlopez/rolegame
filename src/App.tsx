@@ -10,14 +10,6 @@ function App() {
   const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
-    // Check if store is rehydrated from IDB
-    // useGameStore.persist.onFinishHydration(() => setIsHydrated(true)); // Generic check
-    // Zustand persist doesn't always expose onFinishHydration easily depending on version
-    // Simple timeout for now or check if values exist.
-    // Actually, createJSONStorage + idb is async.
-    // We can assume hydrated when useEffect runs? 
-    // Let's use hasHydrated() from persist options if available, or just checks.
-
     const checkHydration = async () => {
       // Wait a tick for hydration
       await new Promise(r => setTimeout(r, 100));
@@ -29,14 +21,14 @@ function App() {
     checkHydration();
   }, [selectedModel, chatHistory.length]);
 
-  if (!isHydrated) return null; // Or loading spinner
+  if (!isHydrated) return null;
 
   return (
     <Layout>
       {!isPlaying ? (
         <GameSetup onStart={() => setIsPlaying(true)} />
       ) : (
-        <GameInterface />
+        <GameInterface onBackToSetup={() => setIsPlaying(false)} />
       )}
     </Layout>
   );

@@ -2,11 +2,16 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useGameStore } from '../store/useGameStore';
 import type { ChatMessage } from '../store/useGameStore';
 import { OllamaService } from '../services/ollamaService';
+import type { OllamaModel } from '../services/ollamaService';
 import { parseGameResponse, SYSTEM_INSTRUCTION_SUFFIX } from '../utils/responseParser';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export const GameInterface: React.FC = () => {
+interface GameInterfaceProps {
+    onBackToSetup: () => void;
+}
+
+export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) => {
     const {
         selectedModel,
         systemPrompt,
@@ -16,20 +21,36 @@ export const GameInterface: React.FC = () => {
         setContextVector,
         clearGame,
         inventory,
-        addItem, // destructured action
+        addItem,
         locations,
-        addLocation, // destructured action
+        addLocation,
         journal,
         addJournalEntry,
-        updateLastMessage
+        updateLastMessage,
+        setModel
     } = useGameStore();
 
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState<'inventory' | 'locations' | 'journal'>('inventory');
     const [journalInput, setJournalInput] = useState('');
+    const [showSettings, setShowSettings] = useState(false);
+    const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
 
     const chatBottomRef = useRef<HTMLDivElement>(null);
+
+    // Fetch available models for the settings menu
+    useEffect(() => {
+        const fetchModels = async () => {
+            try {
+                const models = await OllamaService.listModels();
+                setAvailableModels(models);
+            } catch (error) {
+                console.error('Failed to fetch models:', error);
+            }
+        };
+        fetchModels();
+    }, []);
 
     useEffect(() => {
         if (chatBottomRef.current) {
@@ -45,7 +66,7 @@ export const GameInterface: React.FC = () => {
                 try {
                     // Placeholder for streaming
                     const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
-                    addMessage(streamMsg); // Add empty message to start filling
+                    addMessage(streamMsg);
 
                     const stream = await OllamaService.generateResponseStream(
                         selectedModel,
@@ -66,31 +87,33 @@ export const GameInterface: React.FC = () => {
                         fullText += part.response;
                         updateLastMessage(fullText);
 
-                        // Scroll to bottom during stream
                         chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
                     }
 
-                    // Final parsing
-                    const { cleanText, commands } = parseGameResponse(fullText);
+                    // Final parsing - only update if we have text
+                    if (fullText.trim()) {
+                        const { cleanText, commands } = parseGameResponse(fullText);
 
-                    // Clean up the message (remove commands from visible text)
-                    updateLastMessage(cleanText);
+                        // Only update if cleanText is not empty
+                        if (cleanText.trim()) {
+                            updateLastMessage(cleanText);
+                        }
 
-                    commands.forEach(cmd => {
-                        if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
-                        if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
-                    });
+                        commands.forEach(cmd => {
+                            if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
+                            if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
+                        });
 
-                    if (finalContext) {
-                        setContextVector(finalContext);
+                        if (finalContext) {
+                            setContextVector(finalContext);
+                        }
                     }
                 } catch (error) {
                     console.error("Failed to start story:", error);
-                    // Clear game state so user can retry
-                    clearGame();
+                    // Don't clear game - just add error message
                     addMessage({
                         role: 'system',
-                        content: error instanceof Error ? `Error starting story: ${error.message}. Click "Reset Game" and try again.` : "Error starting story. Please check Ollama connection.",
+                        content: error instanceof Error ? `Error: ${error.message}` : "Error starting story. Please check Ollama connection.",
                         timestamp: Date.now()
                     });
                 } finally {
@@ -116,7 +139,6 @@ export const GameInterface: React.FC = () => {
         setLoading(true);
 
         try {
-            // Placeholder for streaming
             const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
             addMessage(streamMsg);
 
@@ -138,22 +160,24 @@ export const GameInterface: React.FC = () => {
                 fullText += part.response;
                 updateLastMessage(fullText);
 
-                // Scroll to bottom during stream
                 chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
             }
 
-            const { cleanText, commands } = parseGameResponse(fullText);
+            if (fullText.trim()) {
+                const { cleanText, commands } = parseGameResponse(fullText);
 
-            // Clean up the message (remove commands from visible text)
-            updateLastMessage(cleanText);
+                if (cleanText.trim()) {
+                    updateLastMessage(cleanText);
+                }
 
-            commands.forEach(cmd => {
-                if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
-                if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
-            });
+                commands.forEach(cmd => {
+                    if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
+                    if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
+                });
 
-            if (finalContext) {
-                setContextVector(finalContext);
+                if (finalContext) {
+                    setContextVector(finalContext);
+                }
             }
 
         } catch (error) {
@@ -175,6 +199,11 @@ export const GameInterface: React.FC = () => {
         }
     };
 
+    const handleNewGame = () => {
+        clearGame();
+        onBackToSetup();
+    };
+
     return (
         <div style={{ display: 'flex', height: '100%', gap: '1rem', overflow: 'hidden' }}>
             {/* Main Chat Area */}
@@ -184,6 +213,77 @@ export const GameInterface: React.FC = () => {
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
             >
+                {/* Top Bar with Settings */}
+                <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '0.75rem 1rem',
+                    borderBottom: '1px solid rgba(255,255,255,0.1)',
+                    background: 'rgba(0,0,0,0.2)'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <button
+                            onClick={handleNewGame}
+                            className="glass-btn"
+                            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+                        >
+                            ← New Story
+                        </button>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--accent-color)' }}>
+                            Model: {selectedModel}
+                        </span>
+                        <button
+                            onClick={() => setShowSettings(!showSettings)}
+                            className="glass-btn"
+                            style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem' }}
+                        >
+                            ⚙️ Settings
+                        </button>
+                    </div>
+                </div>
+
+                {/* Settings Panel */}
+                <AnimatePresence>
+                    {showSettings && (
+                        <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            style={{
+                                background: 'rgba(0,0,0,0.3)',
+                                borderBottom: '1px solid rgba(255,255,255,0.1)',
+                                overflow: 'hidden'
+                            }}
+                        >
+                            <div style={{ padding: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.9rem' }}>Change Model:</label>
+                                    <select
+                                        className="glass-input"
+                                        style={{ background: 'rgba(0,0,0,0.5)', padding: '0.5rem' }}
+                                        value={selectedModel}
+                                        onChange={(e) => setModel(e.target.value)}
+                                    >
+                                        {availableModels.map(m => (
+                                            <option key={m.digest} value={m.name}>
+                                                {m.name} ({Math.round(m.size / 1024 / 1024 / 1024)}GB)
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <p style={{ fontSize: '0.8rem', color: 'gray', margin: 0 }}>
+                                    Note: Changing model mid-story may affect coherence.
+                                </p>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {/* Chat Messages */}
                 <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     {chatHistory.map((msg, idx) => (
                         <motion.div
@@ -211,6 +311,7 @@ export const GameInterface: React.FC = () => {
                     <div ref={chatBottomRef} />
                 </div>
 
+                {/* Input Area */}
                 <div style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)' }}>
                     <div style={{ position: 'relative' }}>
                         <textarea
