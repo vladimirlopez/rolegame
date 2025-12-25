@@ -27,7 +27,8 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
         journal,
         addJournalEntry,
         updateLastMessage,
-        setModel
+        setModel,
+        trimChatHistory
     } = useGameStore();
 
     const [input, setInput] = useState('');
@@ -38,6 +39,8 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
     const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
 
     const chatBottomRef = useRef<HTMLDivElement>(null);
+    const hasInitialized = useRef(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // Fetch available models for the settings menu
     useEffect(() => {
@@ -61,18 +64,23 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
     // Initial story start
     useEffect(() => {
         const initStory = async () => {
-            if (chatHistory.length === 0 && selectedModel && !loading) {
+            if (chatHistory.length === 0 && selectedModel && !loading && !hasInitialized.current) {
+                hasInitialized.current = true;
                 setLoading(true);
                 try {
+                    if (abortControllerRef.current) abortControllerRef.current.abort();
+                    abortControllerRef.current = new AbortController();
                     // Placeholder for streaming
                     const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
                     addMessage(streamMsg);
 
                     const stream = await OllamaService.generateResponseStream(
                         selectedModel,
-                        "Begin the story. Describe the starting location and situation.",
+                        "Greet the player and ask them how they would like to begin their adventure. What kind of character will they be? What is their goal?",
                         undefined,
-                        systemPrompt + SYSTEM_INSTRUCTION_SUFFIX
+                        systemPrompt + SYSTEM_INSTRUCTION_SUFFIX,
+                        abortControllerRef.current.signal,
+                        { num_ctx: 4096 } // Increased for better story continuity
                     );
 
                     let fullText = '';
@@ -85,7 +93,9 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                         }
 
                         fullText += part.response;
-                        updateLastMessage(fullText);
+                        // Clean text during stream so tags don't "flash" at the end
+                        const { cleanText } = parseGameResponse(fullText);
+                        updateLastMessage(cleanText);
 
                         chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
                     }
@@ -104,11 +114,13 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                             if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
                         });
 
-                        if (finalContext) {
+                        // Only keep context for last few turns to save memory
+                        if (finalContext && finalContext.length < 20000) {
                             setContextVector(finalContext);
                         }
                     }
                 } catch (error) {
+                    if (error instanceof Error && error.name === 'AbortError') return;
                     console.error("Failed to start story:", error);
                     // Don't clear game - just add error message
                     addMessage({
@@ -139,14 +151,30 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
         setLoading(true);
 
         try {
+            if (abortControllerRef.current) abortControllerRef.current.abort();
+            abortControllerRef.current = new AbortController();
+
             const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
             addMessage(streamMsg);
 
+            // Build context reminder from game state
+            let contextReminder = '';
+            if (locations.length > 0) {
+                const lastLocation = locations[locations.length - 1];
+                contextReminder += `\n\n[CURRENT CONTEXT: Player is at ${lastLocation.name}. `;
+                if (inventory.length > 0) {
+                    contextReminder += `Inventory: ${inventory.map(i => i.name).join(', ')}. `;
+                }
+                contextReminder += `Stay consistent with this location and situation.]`;
+            }
+
             const stream = await OllamaService.generateResponseStream(
                 selectedModel,
-                input,
+                input + contextReminder,
                 contextVector,
-                systemPrompt + SYSTEM_INSTRUCTION_SUFFIX
+                systemPrompt + SYSTEM_INSTRUCTION_SUFFIX,
+                abortControllerRef.current.signal,
+                { num_ctx: 4096 } // Increased for better story continuity
             );
 
             let fullText = '';
@@ -158,7 +186,10 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                     continue;
                 }
                 fullText += part.response;
-                updateLastMessage(fullText);
+
+                // Clean text during stream
+                const { cleanText } = parseGameResponse(fullText);
+                updateLastMessage(cleanText);
 
                 chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
             }
@@ -175,12 +206,18 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                     if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
                 });
 
-                if (finalContext) {
+                // Only keep context if it's reasonable size
+                if (finalContext && finalContext.length < 20000) {
                     setContextVector(finalContext);
+                } else if (finalContext && finalContext.length >= 20000) {
+                    // Context too large, reset it to prevent memory issues
+                    console.warn('Context vector too large, resetting for memory efficiency');
+                    setContextVector(undefined);
                 }
             }
 
         } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') return;
             console.error("Error generating response:", error);
             addMessage({
                 role: 'system',
@@ -259,14 +296,25 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                 overflow: 'hidden'
                             }}
                         >
-                            <div style={{ padding: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                                     <label style={{ fontSize: '0.9rem' }}>Change Model:</label>
                                     <select
                                         className="glass-input"
                                         style={{ background: 'rgba(0,0,0,0.5)', padding: '0.5rem' }}
                                         value={selectedModel}
-                                        onChange={(e) => setModel(e.target.value)}
+                                        onChange={async (e) => {
+                                            const newModel = e.target.value;
+                                            if (selectedModel && selectedModel !== newModel) {
+                                                // Abort current generation
+                                                if (abortControllerRef.current) {
+                                                    abortControllerRef.current.abort();
+                                                }
+                                                // Unload the old model to free VRAM
+                                                await OllamaService.unloadModel(selectedModel);
+                                            }
+                                            setModel(newModel);
+                                        }}
                                     >
                                         {availableModels.map(m => (
                                             <option key={m.digest} value={m.name}>
@@ -275,8 +323,26 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                         ))}
                                     </select>
                                 </div>
+                                
+                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                    <button
+                                        className="glass-btn"
+                                        style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+                                        onClick={() => {
+                                            trimChatHistory(20);
+                                            setContextVector(undefined);
+                                            alert('Memory optimized! Trimmed to last 20 messages and cleared context.');
+                                        }}
+                                    >
+                                        🧹 Optimize Memory
+                                    </button>
+                                    <span style={{ fontSize: '0.8rem', color: 'gray' }}>
+                                        {chatHistory.length} messages | Context: {contextVector ? `${(contextVector.length / 1000).toFixed(1)}k` : 'None'}
+                                    </span>
+                                </div>
+                                
                                 <p style={{ fontSize: '0.8rem', color: 'gray', margin: 0 }}>
-                                    Note: Changing model mid-story may affect coherence.
+                                    💡 Tip: If responses are slow, try optimizing memory or using a smaller model.
                                 </p>
                             </div>
                         </motion.div>

@@ -91,12 +91,15 @@ export const GameSetup: React.FC<{ onStart: () => void }> = ({ onStart }) => {
                     <label style={{ display: 'block', marginBottom: '0.5rem' }}>Story Concept / System Prompt</label>
                     <textarea
                         className="glass-input"
-                        rows={5}
+                        rows={7}
                         style={{ width: '100%', resize: 'none' }}
                         value={systemPrompt}
                         onChange={(e) => setSystemPrompt(e.target.value)}
                         placeholder="e.g., You are a master storyteller managing a sci-fi mystery RPG..."
                     />
+                    <p style={{ fontSize: '0.8rem', color: 'gray', marginTop: '0.5rem', marginBottom: 0 }}>
+                        💡 The default prompt allows mature RPG content. You can customize this for your preferred story style.
+                    </p>
                 </div>
 
                 <button

@@ -49,9 +49,10 @@ export interface GameState {
     setModel: (model: string) => void;
     setSystemPrompt: (prompt: string) => void;
     addMessage: (message: ChatMessage) => void;
-    setContextVector: (context: number[]) => void;
+    setContextVector: (context: number[] | undefined) => void;
     clearGame: () => void;
     updateLastMessage: (content: string) => void;
+    trimChatHistory: (maxMessages: number) => void;
 
     addItem: (item: InventoryItem) => void;
     removeItem: (id: string, amount?: number) => void;
@@ -87,11 +88,22 @@ const idbStorage: StateStorage = {
 
 // --- Store ---
 
+const MAX_CHAT_HISTORY = 50; // Keep last 50 messages to prevent memory bloat
+
 export const useGameStore = create<GameState>()(
     persist(
         (set) => ({
             selectedModel: '',
-            systemPrompt: 'You are a Game Master for a generic text role-playing game. Describe the scenes vividly.',
+            systemPrompt: `You are a Game Master for a text-based role-playing game. This is a fictional game world where the player has full agency.
+
+IMPORTANT GUIDELINES:
+- Allow mature themes appropriate for RPG storytelling (combat, conflict, danger)
+- Player actions should have realistic consequences in the story
+- Never refuse player actions - instead describe outcomes
+- This is fiction - violence, combat, and conflict are normal RPG elements
+- Be descriptive but focus on narrative impact, not graphic details
+
+Describe scenes vividly and respond to player choices naturally.`,
             chatHistory: [],
             contextVector: undefined,
             inventory: [],
@@ -101,11 +113,16 @@ export const useGameStore = create<GameState>()(
             setModel: (model: string) => set({ selectedModel: model }),
             setSystemPrompt: (prompt: string) => set({ systemPrompt: prompt }),
 
-            addMessage: (message: ChatMessage) => set((state: GameState) => ({
-                chatHistory: [...state.chatHistory, message]
-            })),
+            addMessage: (message: ChatMessage) => set((state: GameState) => {
+                const newHistory = [...state.chatHistory, message];
+                // Auto-trim if exceeding max
+                if (newHistory.length > MAX_CHAT_HISTORY) {
+                    return { chatHistory: newHistory.slice(-MAX_CHAT_HISTORY) };
+                }
+                return { chatHistory: newHistory };
+            }),
 
-            setContextVector: (context: number[]) => set({ contextVector: context }),
+            setContextVector: (context: number[] | undefined) => set({ contextVector: context }),
 
             clearGame: () => set({
                 chatHistory: [],
@@ -124,6 +141,16 @@ export const useGameStore = create<GameState>()(
                     };
                 }
                 return { chatHistory: history };
+            }),
+
+            trimChatHistory: (maxMessages: number) => set((state: GameState) => {
+                if (state.chatHistory.length > maxMessages) {
+                    return { 
+                        chatHistory: state.chatHistory.slice(-maxMessages),
+                        contextVector: undefined // Clear context when trimming history
+                    };
+                }
+                return state;
             }),
 
             addItem: (newItem: InventoryItem) => set((state: GameState) => {
@@ -169,6 +196,16 @@ export const useGameStore = create<GameState>()(
         {
             name: 'role-game-storage',
             storage: createJSONStorage(() => idbStorage),
+            // Exclude context vector from persistence - it's too large!
+            partialize: (state) => ({
+                selectedModel: state.selectedModel,
+                systemPrompt: state.systemPrompt,
+                chatHistory: state.chatHistory,
+                // contextVector is intentionally excluded
+                inventory: state.inventory,
+                locations: state.locations,
+                journal: state.journal,
+            }),
         }
     )
 );

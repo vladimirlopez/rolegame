@@ -36,12 +36,40 @@ export const OllamaService = {
     }
   },
 
+  /**
+   * Unloads a model from Ollama's memory by sending a request with keep_alive: 0.
+   * This frees up VRAM so another model can use the GPU.
+   */
+  async unloadModel(model: string): Promise<void> {
+    try {
+      const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt: '',
+          keep_alive: 0, // Immediately unload the model
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn(`Failed to unload model ${model}:`, await response.text());
+      } else {
+        console.log(`Model ${model} unloaded from memory.`);
+      }
+    } catch (error) {
+      console.warn('Error unloading model:', error);
+      // Non-critical error - don't throw
+    }
+  },
+
   async generateResponse(
     model: string,
     prompt: string,
     context?: number[],
     system?: string,
-    stream: boolean = false
+    stream: boolean = false,
+    options?: { num_ctx?: number; num_predict?: number }
   ): Promise<OllamaResponse> {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), 180000); // 180s timeout for model loading
@@ -58,6 +86,7 @@ export const OllamaService = {
           context,
           system,
           stream,
+          options: options || { num_ctx: 4096 }, // Default to 4096 for better story continuity
         }),
         signal: controller.signal
       });
@@ -89,13 +118,23 @@ export const OllamaService = {
     model: string,
     prompt: string,
     context?: number[],
-    system?: string
+    system?: string,
+    signal?: AbortSignal,
+    options?: { num_ctx?: number; num_predict?: number }
   ): AsyncGenerator<OllamaResponse, void, unknown> {
     try {
       const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, context, system, stream: true }),
+        body: JSON.stringify({ 
+          model, 
+          prompt, 
+          context, 
+          system, 
+          stream: true,
+          options: options || { num_ctx: 4096 } // Default to 4096 for better story continuity
+        }),
+        signal,
       });
 
       if (!response.ok) {

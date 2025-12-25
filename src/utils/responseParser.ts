@@ -10,15 +10,18 @@ export interface ParsedResponse {
 export const parseGameResponse = (text: string): ParsedResponse => {
     const commands: ParsedResponse['commands'] = [];
 
-    // Syntax: [ITEM_ADD: Name|Description|Qty]
+    // Syntax: [ITEM_ADD: Name|Description|Qty] or [ADD_ITEM: Name|Description|Qty]
+    // Case-insensitive, flexible spacing, optional quotes around values
     // Syntax: [LOCATION: Name|Description]
     // Syntax: [JOURNAL: Title|Content]
 
     let cleanText = text;
 
-    // ITEM_ADD regex
-    const itemAddRegex = /\[ITEM_ADD:\s*([^|\]]+)(?:\|([^|\]]+))?(?:\|(\d+))?\]/g;
-    cleanText = cleanText.replace(itemAddRegex, (_, name, desc, qty) => {
+    // ITEM_ADD / ADD_ITEM regex - more flexible pattern
+    // Matches: [ITEM_ADD: name|desc|qty], [ADD_ITEM: name], [item_add: "name"|"desc"|1], etc.
+    const itemAddRegex = /\[(?:ITEM_ADD|ADD_ITEM)\s*:\s*"?([^|"\]]+)"?(?:\s*\|\s*"?([^|"\]]+)"?)?(?:\s*\|\s*"?(\d+)"?)?\s*\]/gi;
+    cleanText = cleanText.replace(itemAddRegex, (match, name, desc, qty) => {
+        if (!name || !name.trim()) return match; // Skip if no valid name
         commands.push({
             type: 'ADD_ITEM',
             payload: {
@@ -31,9 +34,10 @@ export const parseGameResponse = (text: string): ParsedResponse => {
         return ''; // Remove tag from text
     });
 
-    // LOCATION regex
-    const locRegex = /\[LOCATION:\s*([^|\]]+)(?:\|([^|\]]+))?\]/g;
-    cleanText = cleanText.replace(locRegex, (_, name, desc) => {
+    // LOCATION regex - also more flexible
+    const locRegex = /\[LOCATION\s*:\s*"?([^|"\]]+)"?(?:\s*\|\s*"?([^|"\]]+)"?)?\s*\]/gi;
+    cleanText = cleanText.replace(locRegex, (match, name, desc) => {
+        if (!name || !name.trim()) return match;
         commands.push({
             type: 'SET_LOCATION',
             payload: {
@@ -46,12 +50,27 @@ export const parseGameResponse = (text: string): ParsedResponse => {
         return '';
     });
 
+    // Debug log for development
+    if (commands.length > 0) {
+        console.log('Parsed commands:', commands);
+    }
+
     return { cleanText: cleanText.trim(), commands };
 };
 
 export const SYSTEM_INSTRUCTION_SUFFIX = `
-IMPORTANT GAME RULES:
-- When the player gains an item, output exactly: [ITEM_ADD: Name|Description|Quantity]
-- When the player enters a new named location, output exactly: [LOCATION: Name|Description]
-- Keep these tags on separate lines if possible.
+
+=== GAME SYSTEM INSTRUCTIONS ===
+You MUST use these EXACT tags when game events occur. Do not modify the format.
+
+WHEN THE PLAYER RECEIVES AN ITEM, output this tag on its own line:
+[ITEM_ADD: ItemName|Description|Quantity]
+Example: [ITEM_ADD: Rusty Key|An old key covered in rust|1]
+
+WHEN THE PLAYER ENTERS A NEW LOCATION, output this tag on its own line:
+[LOCATION: LocationName|Description]
+Example: [LOCATION: Dark Forest|A dense forest with twisted trees]
+
+These tags will be parsed by the game system. Always include them when relevant.
+=== END SYSTEM INSTRUCTIONS ===
 `;
