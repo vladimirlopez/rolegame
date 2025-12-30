@@ -4,10 +4,18 @@ import { GameSetup } from './components/GameSetup';
 import { GameInterface } from './components/GameInterface';
 import { useGameStore } from './store/useGameStore';
 
+export interface StoryConfig {
+  genre: string;
+  characterConcept: string;
+  startingOption: string;
+  customIntro: string;
+}
+
 function App() {
   const { selectedModel, chatHistory } = useGameStore();
   const [isPlaying, setIsPlaying] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [storyConfig, setStoryConfig] = useState<StoryConfig | null>(null);
 
   useEffect(() => {
     const checkHydration = async () => {
@@ -23,12 +31,20 @@ function App() {
 
   if (!isHydrated) return null;
 
+  const handleStart = (config: StoryConfig) => {
+    setStoryConfig(config);
+    setIsPlaying(true);
+  };
+
   return (
     <Layout>
       {!isPlaying ? (
-        <GameSetup onStart={() => setIsPlaying(true)} />
+        <GameSetup onStart={handleStart} />
       ) : (
-        <GameInterface onBackToSetup={() => setIsPlaying(false)} />
+        <GameInterface
+          onBackToSetup={() => setIsPlaying(false)}
+          storyConfig={storyConfig}
+        />
       )}
     </Layout>
   );

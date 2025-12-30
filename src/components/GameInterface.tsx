@@ -1,46 +1,59 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useGameStore } from '../store/useGameStore';
-import type { ChatMessage } from '../store/useGameStore';
 import { OllamaService } from '../services/ollamaService';
 import type { OllamaModel } from '../services/ollamaService';
-import { parseGameResponse, SYSTEM_INSTRUCTION_SUFFIX } from '../utils/responseParser';
+import { useGameMessages } from '../hooks/useGameMessages';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'framer-motion';
+import type { StoryConfig } from '../App';
 
 interface GameInterfaceProps {
     onBackToSetup: () => void;
+    storyConfig?: StoryConfig | null;
 }
 
-export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) => {
+export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup, storyConfig }) => {
     const {
         selectedModel,
-        systemPrompt,
         chatHistory,
-        addMessage,
         contextVector,
         setContextVector,
         clearGame,
         inventory,
-        addItem,
         locations,
-        addLocation,
+        currentLocationId,
+        npcs,
+        storyEvents,
         journal,
         addJournalEntry,
-        updateLastMessage,
         setModel,
-        trimChatHistory
+        trimChatHistory,
+        getCurrentLocation,
+        getNpcsAtCurrentLocation,
     } = useGameStore();
 
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
-    const [activeTab, setActiveTab] = useState<'inventory' | 'locations' | 'journal'>('inventory');
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const [activeTab, setActiveTab] = useState<'inventory' | 'locations' | 'journal' | 'npcs'>('inventory');
     const [journalInput, setJournalInput] = useState('');
     const [showSettings, setShowSettings] = useState(false);
     const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
 
     const chatBottomRef = useRef<HTMLDivElement>(null);
     const hasInitialized = useRef(false);
-    const abortControllerRef = useRef<AbortController | null>(null);
+
+    // Use the game messages hook for AI interactions
+    const { sendMessage, initializeStory, abortGeneration } = useGameMessages({
+        onStreamUpdate: () => {
+            chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        },
+        storyConfig
+    });
+
+    // Get current location info for display
+    const currentLocation = getCurrentLocation();
+    const npcsHere = getNpcsAtCurrentLocation();
 
     // Fetch available models for the settings menu
     useEffect(() => {
@@ -55,6 +68,17 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
         fetchModels();
     }, []);
 
+    // Track elapsed time while loading
+    useEffect(() => {
+        if (loading) {
+            setElapsedSeconds(0);
+            const interval = setInterval(() => {
+                setElapsedSeconds(s => s + 1);
+            }, 1000);
+            return () => clearInterval(interval);
+        }
+    }, [loading]);
+
     useEffect(() => {
         if (chatBottomRef.current) {
             chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -63,170 +87,27 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
 
     // Initial story start
     useEffect(() => {
-        const initStory = async () => {
+        const startStory = async () => {
             if (chatHistory.length === 0 && selectedModel && !loading && !hasInitialized.current) {
                 hasInitialized.current = true;
                 setLoading(true);
-                try {
-                    if (abortControllerRef.current) abortControllerRef.current.abort();
-                    abortControllerRef.current = new AbortController();
-                    // Placeholder for streaming
-                    const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
-                    addMessage(streamMsg);
-
-                    const stream = await OllamaService.generateResponseStream(
-                        selectedModel,
-                        "Greet the player and ask them how they would like to begin their adventure. What kind of character will they be? What is their goal?",
-                        undefined,
-                        systemPrompt + SYSTEM_INSTRUCTION_SUFFIX,
-                        abortControllerRef.current.signal,
-                        { num_ctx: 4096 } // Increased for better story continuity
-                    );
-
-                    let fullText = '';
-                    let finalContext: number[] | undefined;
-
-                    for await (const part of stream) {
-                        if (part.done) {
-                            finalContext = part.context;
-                            continue;
-                        }
-
-                        fullText += part.response;
-                        // Clean text during stream so tags don't "flash" at the end
-                        const { cleanText } = parseGameResponse(fullText);
-                        updateLastMessage(cleanText);
-
-                        chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-                    }
-
-                    // Final parsing - only update if we have text
-                    if (fullText.trim()) {
-                        const { cleanText, commands } = parseGameResponse(fullText);
-
-                        // Only update if cleanText is not empty
-                        if (cleanText.trim()) {
-                            updateLastMessage(cleanText);
-                        }
-
-                        commands.forEach(cmd => {
-                            if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
-                            if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
-                        });
-
-                        // Only keep context for last few turns to save memory
-                        if (finalContext && finalContext.length < 20000) {
-                            setContextVector(finalContext);
-                        }
-                    }
-                } catch (error) {
-                    if (error instanceof Error && error.name === 'AbortError') return;
-                    console.error("Failed to start story:", error);
-                    // Don't clear game - just add error message
-                    addMessage({
-                        role: 'system',
-                        content: error instanceof Error ? `Error: ${error.message}` : "Error starting story. Please check Ollama connection.",
-                        timestamp: Date.now()
-                    });
-                } finally {
-                    setLoading(false);
-                }
+                await initializeStory();
+                setLoading(false);
             }
         };
-        initStory();
+        startStory();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleSend = async () => {
         if (!input.trim() || !selectedModel || loading) return;
 
-        const userMsg: ChatMessage = {
-            role: 'user',
-            content: input,
-            timestamp: Date.now()
-        };
-
-        addMessage(userMsg);
+        const userInput = input;
         setInput('');
         setLoading(true);
 
-        try {
-            if (abortControllerRef.current) abortControllerRef.current.abort();
-            abortControllerRef.current = new AbortController();
-
-            const streamMsg: ChatMessage = { role: 'assistant', content: '', timestamp: Date.now() };
-            addMessage(streamMsg);
-
-            // Build context reminder from game state
-            let contextReminder = '';
-            if (locations.length > 0) {
-                const lastLocation = locations[locations.length - 1];
-                contextReminder += `\n\n[CURRENT CONTEXT: Player is at ${lastLocation.name}. `;
-                if (inventory.length > 0) {
-                    contextReminder += `Inventory: ${inventory.map(i => i.name).join(', ')}. `;
-                }
-                contextReminder += `Stay consistent with this location and situation.]`;
-            }
-
-            const stream = await OllamaService.generateResponseStream(
-                selectedModel,
-                input + contextReminder,
-                contextVector,
-                systemPrompt + SYSTEM_INSTRUCTION_SUFFIX,
-                abortControllerRef.current.signal,
-                { num_ctx: 4096 } // Increased for better story continuity
-            );
-
-            let fullText = '';
-            let finalContext: number[] | undefined;
-
-            for await (const part of stream) {
-                if (part.done) {
-                    finalContext = part.context;
-                    continue;
-                }
-                fullText += part.response;
-
-                // Clean text during stream
-                const { cleanText } = parseGameResponse(fullText);
-                updateLastMessage(cleanText);
-
-                chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-            }
-
-            if (fullText.trim()) {
-                const { cleanText, commands } = parseGameResponse(fullText);
-
-                if (cleanText.trim()) {
-                    updateLastMessage(cleanText);
-                }
-
-                commands.forEach(cmd => {
-                    if (cmd.type === 'ADD_ITEM') addItem(cmd.payload);
-                    if (cmd.type === 'SET_LOCATION') addLocation(cmd.payload);
-                });
-
-                // Only keep context if it's reasonable size
-                if (finalContext && finalContext.length < 20000) {
-                    setContextVector(finalContext);
-                } else if (finalContext && finalContext.length >= 20000) {
-                    // Context too large, reset it to prevent memory issues
-                    console.warn('Context vector too large, resetting for memory efficiency');
-                    setContextVector(undefined);
-                }
-            }
-
-        } catch (error) {
-            if (error instanceof Error && error.name === 'AbortError') return;
-            console.error("Error generating response:", error);
-            addMessage({
-                role: 'system',
-                content: error instanceof Error ? `Error: ${error.message}` : "An unknown error occurred.",
-                timestamp: Date.now()
-            });
-        } finally {
-            setLoading(false);
-        }
+        await sendMessage(userInput);
+        setLoading(false);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -237,9 +118,11 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
     };
 
     const handleNewGame = () => {
+        abortGeneration();
         clearGame();
         onBackToSetup();
     };
+
 
     return (
         <div style={{ display: 'flex', height: '100%', gap: '1rem', overflow: 'hidden' }}>
@@ -307,9 +190,7 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                             const newModel = e.target.value;
                                             if (selectedModel && selectedModel !== newModel) {
                                                 // Abort current generation
-                                                if (abortControllerRef.current) {
-                                                    abortControllerRef.current.abort();
-                                                }
+                                                abortGeneration();
                                                 // Unload the old model to free VRAM
                                                 await OllamaService.unloadModel(selectedModel);
                                             }
@@ -323,7 +204,7 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                         ))}
                                     </select>
                                 </div>
-                                
+
                                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                                     <button
                                         className="glass-btn"
@@ -340,7 +221,7 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                         {chatHistory.length} messages | Context: {contextVector ? `${(contextVector.length / 1000).toFixed(1)}k` : 'None'}
                                     </span>
                                 </div>
-                                
+
                                 <p style={{ fontSize: '0.8rem', color: 'gray', margin: 0 }}>
                                     💡 Tip: If responses are slow, try optimizing memory or using a smaller model.
                                 </p>
@@ -370,9 +251,56 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                         </motion.div>
                     ))}
                     {loading && (
-                        <div style={{ alignSelf: 'flex-start', padding: '1rem', color: 'gray', fontStyle: 'italic' }}>
-                            The storyteller is writing...
-                        </div>
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            style={{
+                                alignSelf: 'flex-start',
+                                padding: '1rem 1.5rem',
+                                background: 'rgba(100,255,218,0.05)',
+                                border: '1px solid rgba(100,255,218,0.2)',
+                                borderRadius: '12px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '0.5rem'
+                            }}
+                        >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <motion.span
+                                    animate={{ opacity: [1, 0.3, 1] }}
+                                    transition={{ duration: 1.5, repeat: Infinity }}
+                                    style={{ color: 'var(--accent-color)', fontSize: '1.2rem' }}
+                                >
+                                    ●
+                                </motion.span>
+                                <span style={{ color: 'var(--accent-color)' }}>
+                                    The storyteller is writing
+                                    <motion.span
+                                        animate={{ opacity: [0, 1, 0] }}
+                                        transition={{ duration: 1, repeat: Infinity, delay: 0 }}
+                                    >.</motion.span>
+                                    <motion.span
+                                        animate={{ opacity: [0, 1, 0] }}
+                                        transition={{ duration: 1, repeat: Infinity, delay: 0.2 }}
+                                    >.</motion.span>
+                                    <motion.span
+                                        animate={{ opacity: [0, 1, 0] }}
+                                        transition={{ duration: 1, repeat: Infinity, delay: 0.4 }}
+                                    >.</motion.span>
+                                </span>
+                            </div>
+                            <div style={{ fontSize: '0.8rem', color: 'gray' }}>
+                                {elapsedSeconds < 5 ? (
+                                    'Preparing response...'
+                                ) : elapsedSeconds < 15 ? (
+                                    `Working... (${elapsedSeconds}s)`
+                                ) : elapsedSeconds < 30 ? (
+                                    `Still working, model may be loading... (${elapsedSeconds}s)`
+                                ) : (
+                                    `This is taking a while - large models need time to load (${elapsedSeconds}s)`
+                                )}
+                            </div>
+                        </motion.div>
                     )}
                     <div ref={chatBottomRef} />
                 </div>
@@ -418,24 +346,26 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
             >
-                <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    {(['inventory', 'journal', 'locations'] as const).map(tab => (
+                <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.1)', flexWrap: 'wrap' }}>
+                    {(['inventory', 'locations', 'npcs', 'journal'] as const).map(tab => (
                         <button
                             key={tab}
                             onClick={() => setActiveTab(tab)}
                             style={{
                                 flex: 1,
+                                minWidth: '70px',
                                 background: activeTab === tab ? 'rgba(255,255,255,0.1)' : 'transparent',
                                 border: 'none',
-                                padding: '1rem',
+                                padding: '0.75rem 0.5rem',
                                 color: activeTab === tab ? 'var(--accent-color)' : 'gray',
                                 cursor: 'pointer',
                                 textTransform: 'capitalize',
                                 fontWeight: activeTab === tab ? 'bold' : 'normal',
+                                fontSize: '0.8rem',
                                 transition: 'all 0.2s'
                             }}
                         >
-                            {tab}
+                            {tab === 'npcs' ? 'NPCs' : tab}
                         </button>
                     ))}
                 </div>
@@ -468,14 +398,29 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                             >
                                 <h3>Known Places</h3>
                                 {locations.length === 0 ? <p style={{ color: 'gray', fontSize: '0.9rem', marginTop: '0.5rem' }}>None visited</p> : (
-                                    <ul style={{ listStyle: 'none', marginTop: '0.5rem' }}>
-                                        {locations.map(loc => (
-                                            <li key={loc.id} style={{ marginBottom: '0.5rem', padding: '0.5rem', borderLeft: '2px solid var(--accent-color)' }}>
-                                                <div style={{ fontWeight: 'bold' }}>{loc.name}</div>
-                                                <div style={{ fontSize: '0.8rem', color: 'gray' }}>{loc.description}</div>
-                                            </li>
-                                        ))}
-                                    </ul>
+                                    <>
+                                        <p style={{ fontSize: '0.8rem', color: 'var(--accent-color)', marginBottom: '0.5rem' }}>
+                                            📍 Current: {currentLocation?.name || 'Unknown'}
+                                        </p>
+                                        {npcsHere.length > 0 && (
+                                            <p style={{ fontSize: '0.75rem', color: 'gray', marginBottom: '0.5rem' }}>
+                                                👥 Here: {npcsHere.map(n => n.name).join(', ')}
+                                            </p>
+                                        )}
+                                        <ul style={{ listStyle: 'none', marginTop: '0.5rem' }}>
+                                            {locations.map(loc => (
+                                                <li key={loc.id} style={{
+                                                    marginBottom: '0.5rem',
+                                                    padding: '0.5rem',
+                                                    borderLeft: loc.id === currentLocationId ? '3px solid var(--accent-color)' : '2px solid rgba(255,255,255,0.2)',
+                                                    background: loc.id === currentLocationId ? 'rgba(100,255,218,0.05)' : 'transparent'
+                                                }}>
+                                                    <div style={{ fontWeight: 'bold' }}>{loc.name}</div>
+                                                    <div style={{ fontSize: '0.8rem', color: 'gray' }}>{loc.description}</div>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </>
                                 )}
                             </motion.div>
                         )}
@@ -543,6 +488,53 @@ export const GameInterface: React.FC<GameInterfaceProps> = ({ onBackToSetup }) =
                                         Add Note
                                     </button>
                                 </div>
+                            </motion.div>
+                        )}
+
+                        {activeTab === 'npcs' && (
+                            <motion.div
+                                key="npcs"
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                            >
+                                <h3>Known Characters</h3>
+                                {npcs.length === 0 ? <p style={{ color: 'gray', fontSize: '0.9rem', marginTop: '0.5rem' }}>None met yet</p> : (
+                                    <ul style={{ listStyle: 'none', marginTop: '0.5rem' }}>
+                                        {npcs.map(npc => {
+                                            const npcLocation = locations.find(l => l.id === npc.currentLocationId);
+                                            const isHere = npc.currentLocationId === currentLocationId;
+                                            return (
+                                                <li key={npc.id} style={{
+                                                    marginBottom: '0.5rem',
+                                                    background: isHere ? 'rgba(100,255,218,0.1)' : 'rgba(255,255,255,0.05)',
+                                                    padding: '0.5rem',
+                                                    borderRadius: '4px',
+                                                    borderLeft: isHere ? '3px solid var(--accent-color)' : 'none'
+                                                }}>
+                                                    <div style={{ fontWeight: 'bold' }}>
+                                                        {npc.name} {isHere && <span style={{ fontSize: '0.75rem', color: 'var(--accent-color)' }}>(here)</span>}
+                                                    </div>
+                                                    <div style={{ fontSize: '0.75rem', color: 'gray' }}>
+                                                        📍 {npcLocation?.name || 'Unknown location'}
+                                                    </div>
+                                                    <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginTop: '0.25rem' }}>{npc.description}</div>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                )}
+
+                                {storyEvents.length > 0 && (
+                                    <>
+                                        <h4 style={{ marginTop: '1rem', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Recent Events</h4>
+                                        <ul style={{ listStyle: 'none' }}>
+                                            {[...storyEvents].reverse().slice(0, 5).map(event => (
+                                                <li key={event.id} style={{ fontSize: '0.8rem', color: 'gray', marginBottom: '0.25rem', paddingLeft: '0.5rem', borderLeft: '1px solid rgba(255,255,255,0.2)' }}>
+                                                    {event.description}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </>
+                                )}
                             </motion.div>
                         )}
                     </AnimatePresence>
