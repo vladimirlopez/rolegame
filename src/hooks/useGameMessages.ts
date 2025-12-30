@@ -282,9 +282,27 @@ export const useGameMessages = (options: UseGameMessagesOptions = {}) => {
                 if (finalContext && finalContext.length < 20000) {
                     setContextVector(finalContext);
                 } else if (finalContext && finalContext.length >= 20000) {
-                    console.warn('Context vector too large, resetting for memory efficiency');
                     setContextVector(undefined);
                 }
+
+                // === LEVEL 2: ASYNC SCRIBE ANALYSIS ===
+                // Use the small 'llama3.2:3b' model to find facts the regex missed
+                // Run in background (fire & forget) - don't await!
+                (async () => {
+                    try {
+                        const facts = await OllamaService.extractStoryFacts(cleanText);
+                        if (facts.length > 0) {
+                            console.log('📜 [Scribe] Discovered new facts:', facts);
+                            facts.forEach(f => {
+                                addStoryFact(f.fact, f.importance);
+                            });
+                        }
+                    } catch (err) {
+                        console.warn('Scribe analysis failed:', err);
+                    }
+                })();
+
+
             }
 
             return true;

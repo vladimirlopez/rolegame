@@ -126,11 +126,11 @@ export const OllamaService = {
       const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          model, 
-          prompt, 
-          context, 
-          system, 
+        body: JSON.stringify({
+          model,
+          prompt,
+          context,
+          system,
           stream: true,
           options: options || { num_ctx: 4096 } // Default to 4096 for better story continuity
         }),
@@ -211,6 +211,67 @@ export const OllamaService = {
     } catch (error) {
       console.error('Error in stream generation:', error);
       throw error;
+    }
+  },
+
+  /**
+   * BACKGROUND SCRIBE SERVICE
+   * Uses a small, fast model (llama3.2:3b) to analyze text and extract persistent facts
+   */
+  async extractStoryFacts(
+    text: string,
+    scribeModel: string = 'llama3.2:3b'
+  ): Promise<{ fact: string; importance: 'critical' | 'major' | 'minor' }[]> {
+    const SCRIBE_SYSTEM_PROMPT = `You are a Story Scribe. Your ONLY job is to extract NEW important facts from the game text below.
+Ignore atmospheric descriptions. Focus on:
+1. Names of NPCs met
+2. Critical items found/lost
+3. Important locations discovered
+4. Changes in relationships/plans (e.g. "Meeting agreed for midnight")
+
+OUTPUT FORMAT:
+Return ONLY a JSON array. Do not write anything else.
+[
+  { "fact": "Met Alistair Whitmore at the manor", "importance": "major" },
+  { "fact": "Found the Ancient Tome", "importance": "critical" }
+]`;
+
+    try {
+      const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: scribeModel,
+          prompt: `Analyze this text and extract facts:\n\n"${text}"`,
+          system: SCRIBE_SYSTEM_PROMPT,
+          stream: false,
+          format: 'json', // Force JSON mode
+          options: {
+            num_ctx: 2048,
+            temperature: 0.1 // Low temperature for factual precision
+          }
+        })
+      });
+
+      if (!response.ok) return [];
+
+      const data: OllamaResponse = await response.json();
+      const jsonStr = data.response;
+
+      try {
+        // Parse the JSON output
+        const facts = JSON.parse(jsonStr);
+        if (Array.isArray(facts)) {
+          return facts.filter((f: any) => f.fact && f.importance);
+        }
+      } catch (e) {
+        console.error('Scribe JSON parse error:', e);
+      }
+
+      return [];
+    } catch (error) {
+      console.error('Scribe service error:', error);
+      return [];
     }
   }
 };
